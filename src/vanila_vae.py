@@ -13,6 +13,7 @@ from glob import glob
 from util import *
 import numpy as np
 from PIL import Image
+import pudb
 
 parser = argparse.ArgumentParser(description='PyTorch VAE')
 parser.add_argument('--batch-size', type=int, default=128, metavar='N',
@@ -27,6 +28,7 @@ parser.add_argument('--log-interval', type=int, default=1, metavar='N',
                     help='how many batches to wait before logging training status')
 
 args = parser.parse_args()
+# pu.db
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
 torch.manual_seed(args.seed)
@@ -34,7 +36,7 @@ if args.cuda:
     torch.cuda.manual_seed(args.seed)
 
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-train_loader = range(2080)
+train_loader = range(1581)
 test_loader = range(40)
 
 totensor = transforms.ToTensor()
@@ -43,7 +45,7 @@ def load_batch(batch_idx, istrain):
         template = '../data/train/%s.jpg'
     else:
         template = '../data/test/%s.jpg'
-    l = [str(batch_idx*128 + i).zfill(6) for i in range(128)]
+    l = [str(batch_idx*128 + i).zfill(6) for i in range(1, 129)]
     data = []
     for idx in l:
         img = Image.open(template%idx)
@@ -81,20 +83,20 @@ class VAE(nn.Module):
         self.fc2 = nn.Linear(ndf*8*4*4, latent_variable_size)
 
         # decoder
-        self.d1 = nn.Linear(latent_variable_size, ngf*8*2*4*4)
+        self.d1 = nn.Linear(latent_variable_size, ndf*8*4*4)
 
         self.up1 = nn.UpsamplingNearest2d(scale_factor=2)
         self.pd1 = nn.ReplicationPad2d(1)
-        self.d2 = nn.Conv2d(ngf*8*2, ngf*8, 3, 1)
+        self.d2 = nn.Conv2d(ndf*8, ngf*8, 3, 1)
         self.bn6 = nn.BatchNorm2d(ngf*8, 1.e-3)
 
         self.up2 = nn.UpsamplingNearest2d(scale_factor=2)
-        self.pd2 = nn.ReplicationPad2d(1)
+        self.pd2 = nn.ReplicationPad2d(2)
         self.d3 = nn.Conv2d(ngf*8, ngf*4, 3, 1)
         self.bn7 = nn.BatchNorm2d(ngf*4, 1.e-3)
 
         self.up3 = nn.UpsamplingNearest2d(scale_factor=2)
-        self.pd3 = nn.ReplicationPad2d(1)
+        self.pd3 = nn.ReplicationPad2d((2,2,1,1))
         self.d4 = nn.Conv2d(ngf*4, ngf*2, 3, 1)
         self.bn8 = nn.BatchNorm2d(ngf*2, 1.e-3)
 
@@ -104,7 +106,7 @@ class VAE(nn.Module):
         self.bn9 = nn.BatchNorm2d(ngf, 1.e-3)
 
         self.up5 = nn.UpsamplingNearest2d(scale_factor=2)
-        self.pd5 = nn.ReplicationPad2d(1)
+        self.pd5 = nn.ReplicationPad2d((2,2,2,2))
         self.d6 = nn.Conv2d(ngf, nc, 3, 1)
 
         self.leakyrelu = nn.LeakyReLU(0.2)
@@ -117,8 +119,8 @@ class VAE(nn.Module):
         h3 = self.leakyrelu(self.bn3(self.e3(h2)))
         h4 = self.leakyrelu(self.bn4(self.e4(h3)))
         h5 = self.leakyrelu(self.bn5(self.e5(h4)))
+        self.saved_shape = h5.shape
         h5 = h5.view(-1, self.ndf*8*4*4)
-
         return self.fc1(h5), self.fc2(h5)
 
     def reparametrize(self, mu, logvar):
@@ -132,13 +134,13 @@ class VAE(nn.Module):
 
     def decode(self, z):
         h1 = self.relu(self.d1(z))
-        h1 = h1.view(-1, self.ngf*8*2, 4, 4)
+        h1 = h1.view(self.saved_shape)
         h2 = self.leakyrelu(self.bn6(self.d2(self.pd1(self.up1(h1)))))
         h3 = self.leakyrelu(self.bn7(self.d3(self.pd2(self.up2(h2)))))
         h4 = self.leakyrelu(self.bn8(self.d4(self.pd3(self.up3(h3)))))
         h5 = self.leakyrelu(self.bn9(self.d5(self.pd4(self.up4(h4)))))
-
-        return self.sigmoid(self.d6(self.pd5(self.up5(h5))))
+        h6 = self.sigmoid(self.d6(self.pd5(self.up5(h5))))
+        return h6
 
     def get_latent_var(self, x):
         mu, logvar = self.encode(x.view(-1, self.nc, self.ndf, self.ngf))
@@ -152,7 +154,8 @@ class VAE(nn.Module):
         return res, mu, logvar
 
 
-model = VAE(nc=3, ngf=128, ndf=128, latent_variable_size=500)
+model = VAE(nc=3, ngf=218, ndf=178, latent_variable_size=500)
+model = nn.DataParallel(model)
 
 if args.cuda:
     model.cuda()
@@ -183,13 +186,13 @@ def train(epoch):
         recon_batch, mu, logvar = model(data)
         loss = loss_function(recon_batch, data, mu, logvar)
         loss.backward()
-        train_loss += loss.data[0]
+        train_loss += loss.item()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(data), (len(train_loader)*128),
                 100. * batch_idx / len(train_loader),
-                loss.data[0] / len(data)))
+                loss.item() / len(data)))
 
     print('====> Epoch: {} Average loss: {:.4f}'.format(
           epoch, train_loss / (len(train_loader)*128)))
@@ -291,7 +294,8 @@ def load_last_model():
     return start_epoch, last_cp
 
 def resume_training():
-    start_epoch, _ = load_last_model()
+    # start_epoch, _ = load_last_model()
+    start_epoch = 0
 
     for epoch in range(start_epoch + 1, start_epoch + args.epochs + 1):
         train_loss = train(epoch)
