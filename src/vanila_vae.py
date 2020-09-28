@@ -18,6 +18,8 @@ import pudb
 parser = argparse.ArgumentParser(description='PyTorch VAE')
 parser.add_argument('--batch-size', type=int, default=128, metavar='N',
                     help='input batch size for training (default: 128)')
+parser.add_argument('--test-batch-size', type=int, default=32, metavar='N',
+                    help='input batch size for testing (default: 32)')
 parser.add_argument('--epochs', type=int, default=20, metavar='N',
                     help='number of epochs to train (default: 20)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
@@ -28,7 +30,8 @@ parser.add_argument('--log-interval', type=int, default=1, metavar='N',
                     help='how many batches to wait before logging training status')
 
 args = parser.parse_args()
-# pu.db
+batch_size = args.batch_size
+test_batch_size = args.test_batch_size
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
 torch.manual_seed(args.seed)
@@ -36,8 +39,12 @@ if args.cuda:
     torch.cuda.manual_seed(args.seed)
 
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-train_loader = range(1581)
-test_loader = range(40)
+train_loader = range(int(162770/batch_size))
+test_loader = range(int(19962/test_batch_size))
+
+## Uncomment for checking GPU usage
+# train_loader = range(1)
+# test_loader = range(1)
 
 totensor = transforms.ToTensor()
 def load_batch(batch_idx, istrain):
@@ -45,7 +52,10 @@ def load_batch(batch_idx, istrain):
         template = '../data/train/%s.jpg'
     else:
         template = '../data/test/%s.jpg'
-    l = [str(batch_idx*128 + i).zfill(6) for i in range(1, 129)]
+    if istrain:
+        l = [str(batch_idx*batch_size + i).zfill(6) for i in range(1, batch_size + 1)]
+    else:
+        l = [str(182637 + batch_idx*batch_size + i).zfill(6) for i in range(1, test_batch_size + 1)]
     data = []
     for idx in l:
         img = Image.open(template%idx)
@@ -79,11 +89,11 @@ class VAE(nn.Module):
         self.e5 = nn.Conv2d(ndf*8, ndf*8, 4, 2, 1)
         self.bn5 = nn.BatchNorm2d(ndf*8)
 
-        self.fc1 = nn.Linear(ndf*8*4*4, latent_variable_size)
-        self.fc2 = nn.Linear(ndf*8*4*4, latent_variable_size)
+        self.fc1 = nn.Linear(ndf*8*6*5, latent_variable_size)
+        self.fc2 = nn.Linear(ndf*8*6*5, latent_variable_size)
 
         # decoder
-        self.d1 = nn.Linear(latent_variable_size, ndf*8*4*4)
+        self.d1 = nn.Linear(latent_variable_size, ndf*8*6*5)
 
         self.up1 = nn.UpsamplingNearest2d(scale_factor=2)
         self.pd1 = nn.ReplicationPad2d(1)
@@ -120,7 +130,7 @@ class VAE(nn.Module):
         h4 = self.leakyrelu(self.bn4(self.e4(h3)))
         h5 = self.leakyrelu(self.bn5(self.e5(h4)))
         self.saved_shape = h5.shape
-        h5 = h5.view(-1, self.ndf*8*4*4)
+        h5 = h5.view(-1, self.ndf*8*6*5)
         return self.fc1(h5), self.fc2(h5)
 
     def reparametrize(self, mu, logvar):
@@ -190,13 +200,13 @@ def train(epoch):
         optimizer.step()
         if batch_idx % args.log_interval == 0:
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), (len(train_loader)*128),
+                epoch, batch_idx * len(data), (len(train_loader)*batch_size),
                 100. * batch_idx / len(train_loader),
                 loss.item() / len(data)))
 
     print('====> Epoch: {} Average loss: {:.4f}'.format(
-          epoch, train_loss / (len(train_loader)*128)))
-    return train_loss / (len(train_loader)*128)
+          epoch, train_loss / (len(train_loader)*batch_size)))
+    return train_loss / (len(train_loader)*batch_size)
 
 def test(epoch):
     model.eval()
@@ -207,12 +217,12 @@ def test(epoch):
         if args.cuda:
             data = data.cuda()
         recon_batch, mu, logvar = model(data)
-        test_loss += loss_function(recon_batch, data, mu, logvar).data[0]
+        test_loss += loss_function(recon_batch, data, mu, logvar).item()
 
         torchvision.utils.save_image(data.data, '../imgs/Epoch_{}_data.jpg'.format(epoch), nrow=8, padding=2)
         torchvision.utils.save_image(recon_batch.data, '../imgs/Epoch_{}_recon.jpg'.format(epoch), nrow=8, padding=2)
 
-    test_loss /= (len(test_loader)*128)
+    test_loss /= (len(test_loader)*test_batch_size)
     print('====> Test set loss: {:.4f}'.format(test_loss))
     return test_loss
 
